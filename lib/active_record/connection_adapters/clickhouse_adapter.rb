@@ -17,35 +17,36 @@ require 'net/http'
 require 'openssl'
 
 module ActiveRecord
-  module ConnectionHandling # :nodoc:
-    # Establishes a connection to the database that's used by all Active Record objects
-    def clickhouse_connection(config)
-      config = config.symbolize_keys
+  class Base
+    class << self
+      def clickhouse_connection(config)
+        config = config.symbolize_keys
 
-      if config[:connection]
-        connection = {
-          connection: config[:connection]
-        }
-      else
-        port = config[:port] || 8123
-        connection = {
-          host: config[:host] || 'localhost',
-          port: port,
-          ssl: config[:ssl].present? ? config[:ssl] : port == 443,
-          sslca: config[:sslca],
-          read_timeout: config[:read_timeout],
-          write_timeout: config[:write_timeout],
-          keep_alive_timeout: config[:keep_alive_timeout]
-        }
+        if config[:connection]
+          connection = {
+            connection: config[:connection]
+          }
+        else
+          port = config[:port] || 8123
+          connection = {
+            host: config[:host] || 'localhost',
+            port: port,
+            ssl: config[:ssl].present? ? config[:ssl] : port == 443,
+            sslca: config[:sslca],
+            read_timeout: config[:read_timeout],
+            write_timeout: config[:write_timeout],
+            keep_alive_timeout: config[:keep_alive_timeout]
+          }
+        end
+
+        if config.key?(:database)
+          database = config[:database]
+        else
+          raise ArgumentError, 'No database specified. Missing argument: database.'
+        end
+
+        ConnectionAdapters::ClickhouseAdapter.new(logger, connection, { user: config[:username], password: config[:password], database: database }.compact, config)
       end
-
-      if config.key?(:database)
-        database = config[:database]
-      else
-        raise ArgumentError, 'No database specified. Missing argument: database.'
-      end
-
-      ConnectionAdapters::ClickhouseAdapter.new(logger, connection, config)
     end
   end
 
