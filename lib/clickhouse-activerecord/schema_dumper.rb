@@ -175,6 +175,7 @@ HEADER
       if column.type == :map
         spec[:key_type] = "\"#{column.key_type}\""
         spec[:value_type] = "\"#{column.value_type}\""
+        spec[:array] = nil
       end
 
       spec.merge(super).compact
