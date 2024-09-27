@@ -3,6 +3,13 @@
 A Ruby database ActiveRecord driver for ClickHouse. Support Rails >= 7.1.
 Support ClickHouse version from 22.0 LTS.
 
+## Current Releases
+
+| Project            | Release Badge                                                                                       |
+|--------------------|-----------------------------------------------------------------------------------------------------|
+| **Lago**           | [![Lago Release](https://img.shields.io/github/v/release/getlago/lago)](https://github.com/getlago/lago/releases) |
+| **Clickhouse::Activerecord**     | [![Clickhouse::Activerecord Release](https://img.shields.io/github/v/release/getlago/clickhouse-activerecord)](https://github.com/getlago/clickhouse-activerecord/releases) |
+
 ## Installation
 
 Add this line to your application's Gemfile:
