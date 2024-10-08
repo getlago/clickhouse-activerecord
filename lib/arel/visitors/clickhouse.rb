@@ -54,6 +54,14 @@ module Arel
         collector
       end
 
+      def visit_Arel_Nodes_LimitBy(o, collector)
+        return collector if o.expr.empty? || o.column.empty?
+
+        #.limit_by(1, :transaction_id)
+        collector << "LIMIT #{o.expr} BY #{o.column.to_s}"
+        collector
+      end
+
       def visit_Arel_Nodes_Using o, collector
         collector << "USING "
         visit o.expr, collector

@@ -258,6 +258,13 @@ RSpec.describe 'Model', :migrations do
         expect(Model.final.where(date: '2023-07-21').to_sql).to eq('SELECT sample.* FROM sample FINAL WHERE sample.date = \'2023-07-21\'')
       end
     end
+
+    describe '#limit_by'
+      it 'works' do
+        sql = Model.limit_by(1, :event_name).to_sql
+        expect(sql).to eq('')
+      end
+    end
   end
 
   context 'array' do

@@ -49,6 +49,17 @@ module CoreExtensions
         self
       end
 
+      def limit_by(*opts)
+        spawn.limit_by!(**opts)
+      end
+
+      def limit_by!(*opts)
+        assert_mutability!
+        check_command('LIMIT BY')
+        @values[:limit_by] = opts
+        self
+      end
+
       # The USING clause specifies one or more columns to join, which establishes the equality of these columns. For example:
       #
       #   users = User.joins(:joins).using(:event_name, :date)
@@ -79,6 +90,7 @@ module CoreExtensions
         arel.final! if @values[:final].present?
         arel.settings(@values[:settings]) if @values[:settings].present?
         arel.using(@values[:using]) if @values[:using].present?
+        arel.limit_by(@values[:limit_by]) if @values[:limit_by].present?
 
         arel
       end
