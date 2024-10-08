@@ -16,8 +16,12 @@ module Arel
       # https://clickhouse.com/docs/en/sql-reference/statements/delete
       # DELETE and UPDATE in ClickHouse working only without table name
       def visit_Arel_Attributes_Attribute(o, collector)
-        collector << quote_table_name(o.relation.table_alias || o.relation.name) << '.' unless collector.value.start_with?('DELETE FROM ') || collector.value.include?(' UPDATE ')
-        collector << quote_column_name(o.name)
+        if collector.value.is_a?(String)
+          collector << quote_table_name(o.relation.table_alias || o.relation.name) << '.' unless collector.value.start_with?('DELETE FROM ') || collector.value.include?(' UPDATE ')
+          collector << quote_column_name(o.name)
+        else
+          super
+        end
       end
 
       def visit_Arel_Nodes_SelectOptions(o, collector)
@@ -68,6 +72,14 @@ module Arel
       def visit_Arel_Nodes_DoesNotMatch(o, collector)
         op = o.case_sensitive ? " NOT LIKE " : " NOT ILIKE "
         infix_value o, collector, op
+      end
+
+      def visit_Arel_Nodes_Rows(o, collector)
+        if o.expr.is_a?(String)
+          collector << "ROWS #{o.expr}"
+        else
+          super
+        end
       end
 
       def sanitize_as_setting_value(value)

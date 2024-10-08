@@ -9,7 +9,9 @@ require 'active_record/connection_adapters/clickhouse/oid/date'
 require 'active_record/connection_adapters/clickhouse/oid/date_time'
 require 'active_record/connection_adapters/clickhouse/oid/map'
 require 'active_record/connection_adapters/clickhouse/oid/big_integer'
+require 'active_record/connection_adapters/clickhouse/oid/map'
 require 'active_record/connection_adapters/clickhouse/oid/uuid'
+require 'active_record/connection_adapters/clickhouse/quoting'
 require 'active_record/connection_adapters/clickhouse/schema_definitions'
 require 'active_record/connection_adapters/clickhouse/schema_creation'
 require 'active_record/connection_adapters/clickhouse/schema_statements'
@@ -23,30 +25,11 @@ module ActiveRecord
       def clickhouse_connection(config)
         config = config.symbolize_keys
 
-        if config[:connection]
-          connection = {
-            connection: config[:connection]
-          }
-        else
-          port = config[:port] || 8123
-          connection = {
-            host: config[:host] || 'localhost',
-            port: port,
-            ssl: config[:ssl].present? ? config[:ssl] : port == 443,
-            sslca: config[:sslca],
-            read_timeout: config[:read_timeout],
-            write_timeout: config[:write_timeout],
-            keep_alive_timeout: config[:keep_alive_timeout]
-          }
-        end
-
-        if config.key?(:database)
-          database = config[:database]
-        else
+        unless config.key?(:database)
           raise ArgumentError, 'No database specified. Missing argument: database.'
         end
 
-        ConnectionAdapters::ClickhouseAdapter.new(logger, connection, config)
+        ConnectionAdapters::ClickhouseAdapter.new(config)
       end
     end
   end
@@ -65,7 +48,7 @@ module ActiveRecord
 
   module ModelSchema
     module ClassMethods
-      delegate :final, :final!, :settings, :settings!, to: :all
+      delegate :final, :final!, :settings, :settings!, :window, :window!, to: :all
 
       def is_view
         @is_view || false
@@ -83,44 +66,21 @@ module ActiveRecord
   end
 
   module ConnectionAdapters
+
+    if ActiveRecord::version >= Gem::Version.new('7.2')
+      register "clickhouse", "ActiveRecord::ConnectionAdapters::ClickhouseAdapter", "active_record/connection_adapters/clickhouse_adapter"
+    end
+
     class ClickhouseColumn < Column
-      def key_type
-        return nil unless type == :map
-
-        cast_type(map_types.first)
-      end
-
-      def value_type
-        return nil unless type == :map
-
-        cast_type(map_types.last)
-      end
-
       private
-
-      def map_types
-        sql_type_metadata.sql_type.match(/Map\((.+)\,\s?(.+)\)/).captures
-      end
-
-      def cast_type(type)
-        return type if type.nil?
-
-        case type
-        when /U?Int\d+/
-          :integer
-        when /DateTime/
-          :datetime
-        when /Date/
-          :date
-        when /Array/
-          type
-        else
-          :string
-        end
+      def deduplicated
+        self
       end
     end
 
     class ClickhouseAdapter < AbstractAdapter
+      include Clickhouse::Quoting
+
       ADAPTER_NAME = 'Clickhouse'.freeze
       NATIVE_DATABASE_TYPES = {
         string: { name: 'String' },
@@ -159,16 +119,47 @@ module ActiveRecord
       TYPE_MAP = Type::TypeMap.new.tap { |m| initialize_type_map(m) }
 
       # Initializes and connects a Clickhouse adapter.
-      def initialize(logger, connection_parameters, config)
-        super(nil, logger)
-        @connection_parameters = connection_parameters
-        @connection_config = { user: config[:username], password: config[:password], database: config[:database] }.compact
-        @debug = config[:debug] || false
-        @config = config
+      def initialize(config_or_deprecated_connection, deprecated_logger = nil, deprecated_connection_options = nil, deprecated_config = nil)
+        super
+        if @config[:connection]
+          connection = {
+            connection: @config[:connection]
+          }
+        else
+          port = @config[:port] || 8123
+          connection = {
+            host: @config[:host] || 'localhost',
+            port: port,
+            ssl: @config[:ssl].present? ? @config[:ssl] : port == 443,
+            sslca: @config[:sslca],
+            read_timeout: @config[:read_timeout],
+            write_timeout: @config[:write_timeout],
+            keep_alive_timeout: @config[:keep_alive_timeout]
+          }
+        end
+        @connection_parameters = connection
+
+        @connection_config = { user: @config[:username], password: @config[:password], database: @config[:database] }.compact
+        @debug = @config[:debug] || false
 
         @prepared_statements = false
 
         connect
+      end
+
+      # Return ClickHouse server version
+      def server_version
+        @server_version ||= do_system_execute('SELECT version()')['data'][0][0]
+      end
+
+      # Savepoints are not supported, noop
+      def create_savepoint(name)
+      end
+
+      def exec_rollback_to_savepoint(name)
+      end
+
+      def release_savepoint(name)
       end
 
       def migrations_paths
@@ -299,10 +290,15 @@ module ActiveRecord
 
       # SCHEMA STATEMENTS ========================================
 
-      def primary_key(table_name) #:nodoc:
+      def primary_keys(table_name)
+        if server_version.to_f >= 23.4
+          structure = do_system_execute("SHOW COLUMNS FROM `#{table_name}`")
+          return structure['data'].select {|m| m[3]&.include?('PRI') }.pluck(0)
+        end
+
         pk = table_structure(table_name).first
-        return 'id' if pk.present? && pk[0] == 'id'
-        false
+        return ['id'] if pk.present? && pk[0] == 'id'
+        []
       end
 
       def create_schema_dumper(options) # :nodoc:
@@ -312,7 +308,7 @@ module ActiveRecord
       # @param [String] table
       # @return [String]
       def show_create_table(table)
-        do_system_execute("SHOW CREATE TABLE `#{table}`")['data'].try(:first).try(:first).gsub(/[\n\s]+/m, ' ')
+        do_system_execute("SHOW CREATE TABLE `#{table}`")['data'].try(:first).try(:first).gsub(/[\n\s]+/m, ' ').gsub("#{@config[:database]}.", "")
       end
 
       # Create a new ClickHouse database.
@@ -341,7 +337,11 @@ module ActiveRecord
         options = apply_replica(table_name, options)
         td = create_table_definition(apply_cluster(table_name), **options)
         block.call td if block_given?
-        td.column(:id, options[:id], null: false) if options[:id].present? && td[:id].blank? && options[:as].blank?
+        # support old migration version: in 5.0 options id: :integer, but 7.1 options empty
+        # todo remove auto add id column in future
+        if (!options.key?(:id) || options[:id].present? && options[:id] != false) && td[:id].blank? && options[:as].blank?
+          td.column(:id, options[:id] || :integer, null: false)
+        end
 
         if options[:force]
           drop_table(table_name, options.merge(if_exists: true))
@@ -549,6 +549,10 @@ module ActiveRecord
         @connection.keep_alive_timeout = @connection_parameters[:keep_alive_timeout] || 10
 
         @connection
+      end
+
+      def reconnect
+        connect
       end
 
       def apply_replica(table, options)

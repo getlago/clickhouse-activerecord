@@ -25,7 +25,6 @@ module CoreExtensions
 
       # @param [Hash] opts
       def settings!(**opts)
-        assert_mutability!
         check_command('SETTINGS')
         @values[:settings] = (@values[:settings] || {}).merge opts
         self
@@ -43,7 +42,6 @@ module CoreExtensions
       end
 
       def final!
-        assert_mutability!
         check_command('FINAL')
         @values[:final] = true
         self
@@ -62,8 +60,24 @@ module CoreExtensions
 
       # @param [Array] opts
       def using!(*opts)
-        assert_mutability!
         @values[:using] = opts
+        self
+      end
+
+      # Windows functions let you perform calculations across a set of rows that are related to the current row. For example:
+      #
+      #   users = User.window('x', order: 'date', partition: 'name', rows: 'UNBOUNDED PRECEDING').select('sum(value) OVER x')
+      #   # SELECT sum(value) OVER x FROM users WINDOW x AS (PARTITION BY name ORDER BY date ROWS UNBOUNDED PRECEDING)
+      #
+      # @param [String] name
+      # @param [Hash] opts
+      def window(name, **opts)
+        spawn.window!(name, **opts)
+      end
+
+      def window!(name, **opts)
+        @values[:windows] = [] unless @values[:windows]
+        @values[:windows] << [name, opts]
         self
       end
 
@@ -73,12 +87,17 @@ module CoreExtensions
         raise ::ActiveRecord::ActiveRecordError, cmd + ' is a ClickHouse specific query clause' unless connection.is_a?(::ActiveRecord::ConnectionAdapters::ClickhouseAdapter)
       end
 
-      def build_arel(aliases = nil)
-        arel = super
+      def build_arel(connection_or_aliases = nil, aliases = nil)
+        if ::ActiveRecord::version >= Gem::Version.new('7.2')
+          arel = super
+        else
+          arel = super(connection_or_aliases)
+        end
 
         arel.final! if @values[:final].present?
         arel.settings(@values[:settings]) if @values[:settings].present?
         arel.using(@values[:using]) if @values[:using].present?
+        arel.windows(@values[:windows]) if @values[:windows].present?
 
         arel
       end

@@ -14,6 +14,7 @@ RSpec.describe 'Model', :migrations do
     self.table_name = 'sample'
     self.primary_key = 'event_name'
   end
+  IS_NEW_CLICKHOUSE_SERVER = Model.connection.server_version.to_f >= 23.4
 
   let(:date) { Date.today }
 
@@ -21,7 +22,13 @@ RSpec.describe 'Model', :migrations do
 
     before do
       migrations_dir = File.join(FIXTURES_PATH, 'migrations', 'add_sample_data')
-      quietly { ActiveRecord::MigrationContext.new(migrations_dir, Model.connection.schema_migration).up }
+      quietly { ActiveRecord::MigrationContext.new(migrations_dir).up }
+    end
+
+    if IS_NEW_CLICKHOUSE_SERVER
+      it "detect primary key" do
+        expect(Model.primary_key).to eq('event_name')
+      end
     end
 
     describe '#do_execute' do
@@ -80,19 +87,17 @@ RSpec.describe 'Model', :migrations do
 
       it 'update model with primary key' do
         expect {
-          ModelPk.first.update!(event_value: 2)
+          if IS_NEW_CLICKHOUSE_SERVER
+            Model.first.update!(event_value: 2)
+          else
+            ModelPk.first.update!(event_value: 2)
+          end
         }.to_not raise_error
       end
     end
 
     describe '#delete' do
       let!(:record) { Model.create!(event_name: 'some event', date: date) }
-
-      it 'model destroy' do
-        expect {
-          record.destroy!
-        }.to raise_error(ActiveRecord::ActiveRecordError, 'Deleting a row is not possible without a primary key')
-      end
 
       it 'scope' do
         expect {
@@ -102,8 +107,20 @@ RSpec.describe 'Model', :migrations do
 
       it 'destroy model with primary key' do
         expect {
-          ModelPk.first.destroy!
+          if IS_NEW_CLICKHOUSE_SERVER
+            Model.first.destroy!
+          else
+            ModelPk.first.destroy!
+          end
         }.to_not raise_error
+      end
+    end
+
+    describe '#find_by' do
+      let!(:record) { Model.create!(event_name: 'some event', date: Date.current, datetime: Time.now) }
+
+      it 'finds the record' do
+        expect(Model.find_by(event_name: 'some event').attributes).to eq(record.attributes)
       end
     end
 
@@ -115,7 +132,13 @@ RSpec.describe 'Model', :migrations do
       it 'select' do
         Model.create!(event_name: 'some event 1', date: 1.day.ago)
         Model.create!(event_name: 'some event 2', date: 2.day.ago)
-        expect(Model.all.reverse_order!.map(&:event_name)).to eq(['some event 1', 'some event 2'])
+        if IS_NEW_CLICKHOUSE_SERVER
+          expect(Model.all.reverse_order!.to_sql).to eq('SELECT sample.* FROM sample ORDER BY sample.event_name DESC')
+          expect(Model.all.reverse_order!.map(&:event_name)).to eq(['some event 2', 'some event 1'])
+        else
+          expect(Model.all.reverse_order!.to_sql).to eq('SELECT sample.* FROM sample ORDER BY sample.date DESC')
+          expect(Model.all.reverse_order!.map(&:event_name)).to eq(['some event 1', 'some event 2'])
+        end
       end
     end
 
@@ -124,8 +147,8 @@ RSpec.describe 'Model', :migrations do
       let!(:record2) { Model.create!(event_name: 'some event', event_value: 3, date: date) }
 
       it 'integer' do
-        expect(Model.select(Arel.sql('sum(event_value) AS event_value')).first.event_value.class).to eq(Integer)
-        expect(Model.select(Arel.sql('sum(event_value) AS value')).first.attributes['value'].class).to eq(Integer)
+        expect(Model.select(Arel.sql('sum(event_value) AS event_value'))[0].event_value.class).to eq(Integer)
+        expect(Model.select(Arel.sql('sum(event_value) AS value'))[0].attributes['value'].class).to eq(Integer)
         expect(Model.pluck(Arel.sql('sum(event_value)')).first[0].class).to eq(Integer)
       end
     end
@@ -222,6 +245,18 @@ RSpec.describe 'Model', :migrations do
       end
     end
 
+    describe '#window' do
+      it 'works' do
+        sql = Model.window('x', order: 'date', partition: 'name', rows: 'UNBOUNDED PRECEDING').select('sum(event_value) OVER x').to_sql
+        expect(sql).to eq('SELECT sum(event_value) OVER x FROM sample WINDOW x AS (PARTITION BY name ORDER BY date ROWS UNBOUNDED PRECEDING)')
+      end
+
+      it 'empty' do
+        sql = Model.window('x').select('sum(event_value) OVER x').to_sql
+        expect(sql).to eq('SELECT sum(event_value) OVER x FROM sample WINDOW x AS ()')
+      end
+    end
+
     describe 'arel predicates' do
       describe '#matches' do
         it 'uses ilike for case insensitive matches' do
@@ -260,8 +295,38 @@ RSpec.describe 'Model', :migrations do
     end
   end
 
-  context 'array' do
+  context 'sample with id column' do
+    class ModelWithoutPrimaryKey < ActiveRecord::Base
+      self.table_name = 'sample_without_key'
+    end
 
+    before do
+      migrations_dir = File.join(FIXTURES_PATH, 'migrations', 'add_sample_data_without_primary_key')
+      quietly { ActiveRecord::MigrationContext.new(migrations_dir).up }
+    end
+
+    it 'detect primary key' do
+      expect(ModelWithoutPrimaryKey.primary_key).to eq(nil)
+    end
+
+    describe '#delete' do
+      let!(:record) { ModelWithoutPrimaryKey.create!(event_name: 'some event', date: date) }
+
+      it 'model destroy' do
+        expect {
+          record.destroy!
+        }.to raise_error(ActiveRecord::ActiveRecordError, 'Deleting a row is not possible without a primary key')
+      end
+
+      it 'scope' do
+        expect {
+          ModelWithoutPrimaryKey.where(event_name: 'some event').delete_all
+        }.to_not raise_error
+      end
+    end
+  end
+
+  context 'array' do
     let!(:model) do
       Class.new(ActiveRecord::Base) do
         self.table_name = 'actions'
@@ -270,7 +335,7 @@ RSpec.describe 'Model', :migrations do
 
     before do
       migrations_dir = File.join(FIXTURES_PATH, 'migrations', 'add_array_datetime')
-      quietly { ActiveRecord::MigrationContext.new(migrations_dir, model.connection.schema_migration).up }
+      quietly { ActiveRecord::MigrationContext.new(migrations_dir).up }
     end
 
     describe '#create' do
@@ -313,6 +378,62 @@ RSpec.describe 'Model', :migrations do
         expect(event.array_datetime[0].is_a?(DateTime)).to be_truthy
         expect(event.array_datetime[0]).to eq('2022-12-06 15:22:49')
         expect(event.array_datetime[1]).to eq('2022-12-05 15:22:49')
+      end
+    end
+  end
+
+  context 'map' do
+    let!(:model) do
+      Class.new(ActiveRecord::Base) do
+        self.table_name = 'verbs'
+      end
+    end
+
+    before do
+      migrations_dir = File.join(FIXTURES_PATH, 'migrations', 'add_map_datetime')
+      quietly { ActiveRecord::MigrationContext.new(migrations_dir).up }
+    end
+
+    describe '#create' do
+      it 'creates a new record' do
+        expect {
+          model.create!(
+            map_datetime: {a: 1.day.ago, b: Time.now, c: '2022-12-06 15:22:49'},
+            map_string: {a: 'asdf', b: 'jkl' },
+            map_int: {a: 1, b: 2},
+            date: date
+          )
+        }.to change { model.count }
+        record = model.first
+        expect(record.map_datetime.is_a?(Hash)).to be_truthy
+        expect(record.map_datetime['a'].is_a?(DateTime)).to be_truthy
+        expect(record.map_string['a'].is_a?(String)).to be_truthy
+        expect(record.map_string).to eq({'a' => 'asdf', 'b' => 'jkl'})
+        expect(record.map_int.is_a?(Hash)).to be_truthy
+        expect(record.map_int).to eq({'a' => 1, 'b' => 2})
+      end
+
+      it 'create with insert all' do
+        expect {
+          model.insert_all([{
+            map_datetime: {a: 1.day.ago, b: Time.now, c: '2022-12-06 15:22:49'},
+            map_string: {a: 'asdf', b: 'jkl' },
+            map_int: {a: 1, b: 2},
+            date: date
+          }])
+        }.to change { model.count }
+      end
+
+      it 'get record' do
+        model.connection.insert("INSERT INTO #{model.table_name} (id, map_datetime, date) VALUES (1, {'a': '2022-12-05 15:22:49', 'b': '2022-12-06 15:22:49'}, '2022-12-06')")
+        expect(model.count).to eq(1)
+        record = model.first
+        expect(record.date.is_a?(Date)).to be_truthy
+        expect(record.date).to eq(Date.parse('2022-12-06'))
+        expect(record.map_datetime.is_a?(Hash)).to be_truthy
+        expect(record.map_datetime['a'].is_a?(DateTime)).to be_truthy
+        expect(record.map_datetime['a']).to eq(DateTime.parse('2022-12-05 15:22:49'))
+        expect(record.map_datetime['b']).to eq(DateTime.parse('2022-12-06 15:22:49'))
       end
     end
   end

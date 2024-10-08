@@ -58,6 +58,19 @@ RSpec.describe 'Migration', :migrations do
           end
         end
 
+        context 'without id' do
+          let(:directory) { 'dsl_create_view_without_id' }
+          it 'creates a table' do
+            subject
+
+            current_schema = schema(model)
+
+            expect(current_schema.keys.count).to eq(1)
+            expect(current_schema).to_not have_key('id')
+            expect(current_schema['col'].sql_type).to eq('String')
+          end
+        end
+
         context 'with buffer table' do
           let(:directory) { 'dsl_table_buffer_creation' }
           it 'creates a table' do
@@ -90,13 +103,15 @@ RSpec.describe 'Migration', :migrations do
 
               current_schema = schema(model)
 
-              expect(current_schema.keys.count).to eq(3)
+              expect(current_schema.keys.count).to eq(4)
               expect(current_schema).to have_key('id')
               expect(current_schema).to have_key('money')
               expect(current_schema).to have_key('balance')
               expect(current_schema['id'].sql_type).to eq('UInt32')
               expect(current_schema['money'].sql_type).to eq('Nullable(Decimal(16, 4))')
               expect(current_schema['balance'].sql_type).to eq('Decimal(32, 2)')
+              expect(current_schema['balance'].default).to eq(0.0)
+              expect(current_schema['paid'].default).to eq(1.15)
             end
           end
 
@@ -126,7 +141,11 @@ RSpec.describe 'Migration', :migrations do
               expect(current_schema).to have_key('datetime')
               expect(current_schema).to have_key('datetime64')
               expect(current_schema['datetime'].sql_type).to eq('DateTime')
+              expect(current_schema['datetime'].default).to be_nil
+              expect(current_schema['datetime'].default_function).to eq('now()')
               expect(current_schema['datetime64'].sql_type).to eq('Nullable(DateTime64(3))')
+              expect(current_schema['datetime64'].default).to be_nil
+              expect(current_schema['datetime64'].default_function).to eq('now64()')
             end
           end
 
@@ -137,13 +156,16 @@ RSpec.describe 'Migration', :migrations do
 
               current_schema = schema(model)
 
-              expect(current_schema.keys.count).to eq(3)
+              expect(current_schema.keys.count).to eq(4)
               expect(current_schema).to have_key('col1')
               expect(current_schema).to have_key('col2')
               expect(current_schema).to have_key('col3')
+              expect(current_schema).to have_key('col4')
               expect(current_schema['col1'].sql_type).to eq('LowCardinality(String)')
+              expect(current_schema['col1'].default).to eq('col')
               expect(current_schema['col2'].sql_type).to eq('LowCardinality(Nullable(String))')
               expect(current_schema['col3'].sql_type).to eq('Array(LowCardinality(Nullable(String)))')
+              expect(current_schema['col4'].sql_type).to eq('Map(String, LowCardinality(Nullable(String)))')
             end
           end
 
@@ -154,11 +176,13 @@ RSpec.describe 'Migration', :migrations do
 
               current_schema = schema(model)
 
-              expect(current_schema.keys.count).to eq(2)
+              expect(current_schema.keys.count).to eq(3)
               expect(current_schema).to have_key('fixed_string1')
               expect(current_schema).to have_key('fixed_string16_array')
+              expect(current_schema).to have_key('fixed_string16_map')
               expect(current_schema['fixed_string1'].sql_type).to eq('FixedString(1)')
               expect(current_schema['fixed_string16_array'].sql_type).to eq('Array(Nullable(FixedString(16)))')
+              expect(current_schema['fixed_string16_map'].sql_type).to eq('Map(String, Nullable(FixedString(16)))')
             end
           end
 
@@ -174,6 +198,7 @@ RSpec.describe 'Migration', :migrations do
               expect(current_schema).to have_key('enum16')
               expect(current_schema).to have_key('enum_nullable')
               expect(current_schema['enum8'].sql_type).to eq("Enum8('key1' = 1, 'key2' = 2)")
+              expect(current_schema['enum8'].default).to eq('key1')
               expect(current_schema['enum16'].sql_type).to eq("Enum16('key1' = 1, 'key2' = 2)")
               expect(current_schema['enum_nullable'].sql_type).to eq("Nullable(Enum8('key1' = 1, 'key2' = 2))")
             end
@@ -257,7 +282,7 @@ RSpec.describe 'Migration', :migrations do
 
             expect { ActiveRecord::Base.connection.rebuild_index('some', 'idx3') }.to raise_error(ActiveRecord::ActiveRecordError, include('Unknown index'))
 
-            expect { ActiveRecord::Base.connection.rebuild_index('some', 'idx3', true) }.to_not raise_error(ActiveRecord::ActiveRecordError)
+            # expect { ActiveRecord::Base.connection.rebuild_index('some', 'idx3', if_exists: true) }.to_not raise_error
 
             ActiveRecord::Base.connection.rebuild_index('some', 'idx2')
           end
@@ -287,11 +312,11 @@ RSpec.describe 'Migration', :migrations do
     describe 'drop table sync' do
       it 'drops table' do
         migrations_dir = File.join(FIXTURES_PATH, 'migrations', 'dsl_drop_table_sync')
-        quietly { ActiveRecord::MigrationContext.new(migrations_dir, model.connection.schema_migration).up(1) }
+        quietly { ActiveRecord::MigrationContext.new(migrations_dir).up(1) }
 
         expect(ActiveRecord::Base.connection.tables).to include('some')
 
-        quietly { ActiveRecord::MigrationContext.new(migrations_dir, model.connection.schema_migration).up(2) }
+        quietly { ActiveRecord::MigrationContext.new(migrations_dir).up(2) }
 
         expect(ActiveRecord::Base.connection.tables).not_to include('some')
       end

@@ -14,25 +14,6 @@ module ClickhouseActiverecord
 
     private
 
-    def header(stream)
-      stream.puts <<HEADER
-# This file is auto-generated from the current state of the database. Instead
-# of editing this file, please use the migrations feature of Active Record to
-# incrementally modify your database, and then regenerate this schema definition.
-#
-# This file is the source Rails uses to define your schema when running `rails
-# #{simple ? 'db' : 'clickhouse'}:schema:load`. When creating a new database, `rails #{simple ? 'db' : 'clickhouse'}:schema:load` tends to
-# be faster and is potentially less error prone than running all of your
-# migrations from scratch. Old migrations may fail to apply correctly if those
-# migrations use external dependencies or application code.
-#
-# It's strongly recommended that you check this file into your version control system.
-
-#{simple ? 'ActiveRecord' : 'ClickhouseActiverecord'}::Schema.define(#{define_params}) do
-
-HEADER
-    end
-
     def tables(stream)
       functions = @connection.functions
       functions.each do |function|
@@ -73,16 +54,11 @@ HEADER
             tbl.print ', materialized: true' if match && match[1].presence
           end
 
-          case pk
-          when String
-            tbl.print ", primary_key: #{pk.inspect}" unless pk == "id"
-            pkcol = columns.detect { |c| c.name == pk }
-            pkcolspec = column_spec_for_primary_key(pkcol)
-            if pkcolspec.present?
-              tbl.print ", #{format_colspec(pkcolspec)}"
+          if (id = columns.detect { |c| c.name == 'id' })
+            spec = column_spec_for_primary_key(id)
+            if spec.present?
+              tbl.print ", #{format_colspec(spec)}"
             end
-          when Array
-            tbl.print ", primary_key: #{pk.inspect}"
           else
             tbl.print ", id: false"
           end
@@ -104,7 +80,8 @@ HEADER
               raise StandardError, "Unknown type '#{column.sql_type}' for column '#{column.name}'" unless @connection.valid_type?(column.type)
               next if column.name == pk
               type, colspec = column_spec(column)
-              tbl.print "    t.#{type} #{column.name.inspect}"
+              name = column.name =~ (/\./) ? "\"`#{column.name}`\"" : column.name.inspect
+              tbl.print "    t.#{type} #{name}"
               tbl.print ", #{format_colspec(colspec)}" if colspec.present?
               tbl.puts
             end
@@ -167,17 +144,20 @@ HEADER
       (column.sql_type =~ /Array?\(/).nil? ? nil : true
     end
 
+    def schema_map(column)
+      (column.sql_type =~ /Map?\(/).nil? ? nil : true
+    end
+
+    def schema_low_cardinality(column)
+      (column.sql_type =~ /LowCardinality?\(/).nil? ? nil : true
+    end
+
     def prepare_column_options(column)
       spec = {}
       spec[:unsigned] = schema_unsigned(column)
       spec[:array] = schema_array(column)
-
-      if column.type == :map
-        spec[:key_type] = "\"#{column.key_type}\""
-        spec[:value_type] = "\"#{column.value_type}\""
-        spec[:array] = nil
-      end
-
+      spec[:map] = schema_map(column)
+      spec[:low_cardinality] = schema_low_cardinality(column)
       spec.merge(super).compact
     end
 

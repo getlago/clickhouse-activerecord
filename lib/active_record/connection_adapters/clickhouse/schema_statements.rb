@@ -18,9 +18,16 @@ module ActiveRecord
           true
         end
 
-        def internal_exec_query(sql, name = nil, binds = [], prepare: false, async: false)
+        def internal_exec_query(sql, name = nil, binds = [], prepare: false, async: false, allow_retry: false)
           result = do_execute(sql, name)
-          ActiveRecord::Result.new(result['meta'].map { |m| m['name'] }, result['data'], result['meta'].map { |m| [m['name'], type_map.lookup(m['type'])] }.to_h)
+          columns = result['meta'].map { |m| m['name'] }
+          types = {}
+          result['meta'].each_with_index do |m, i|
+            # need use column name and index after commit in 7.2:
+            # https://github.com/rails/rails/commit/24dbf7637b1d5cd6eb3d7100b8d0f6872c3fee3c
+            types[m['name']] = types[i] = type_map.lookup(m['type'])
+          end
+          ActiveRecord::Result.new(columns, result['data'], types)
         rescue ActiveRecord::ActiveRecordError => e
           raise e
         rescue StandardError => e
@@ -53,6 +60,12 @@ module ActiveRecord
 
         def tables(name = nil)
           result = do_system_execute("SHOW TABLES WHERE name NOT LIKE '.inner_id.%'", name)
+          return [] if result.nil?
+          result['data'].flatten
+        end
+
+        def views(name = nil)
+          result = do_system_execute("SHOW TABLES WHERE engine = 'View'", name)
           return [] if result.nil?
           result['data'].flatten
         end
@@ -103,6 +116,20 @@ module ActiveRecord
           end
         end
 
+        if ::ActiveRecord::version >= Gem::Version.new('7.2')
+          def schema_migration
+            pool.schema_migration
+          end
+
+          def migration_context
+            pool.migration_context
+          end
+
+          def internal_metadata
+            pool.internal_metadata
+          end
+        end
+
         def assume_migrated_upto_version(version, migrations_paths = nil)
           version = version.to_i
           sm_table = quote_table_name(schema_migration.table_name)
@@ -126,7 +153,7 @@ module ActiveRecord
         # Fix insert_all method
         # https://github.com/PNixx/clickhouse-activerecord/issues/71#issuecomment-1923244983
         def with_yaml_fallback(value) # :nodoc:
-          if value.is_a?(Array)
+          if value.is_a?(Array) || value.is_a?(Hash)
             value
           else
             super
@@ -143,7 +170,10 @@ module ActiveRecord
         def request(sql, format = nil, settings = {})
           formatted_sql = apply_format(sql, format)
           request_params = @connection_config || {}
-          @connection.post("/?#{request_params.merge(settings).to_param}", formatted_sql, 'User-Agent' => "Clickhouse ActiveRecord #{ClickhouseActiverecord::VERSION}")
+          @connection.post("/?#{request_params.merge(settings).to_param}", formatted_sql, {
+            'User-Agent' => "Clickhouse ActiveRecord #{ClickhouseActiverecord::VERSION}",
+            'Content-Type' => 'application/x-www-form-urlencoded',
+          })
         end
 
         def apply_format(sql, format)
@@ -188,9 +218,9 @@ module ActiveRecord
         def new_column_from_field(table_name, field, _definitions)
           sql_type = field[1]
           type_metadata = fetch_type_metadata(sql_type)
-          default = field[3]
-          default_value = extract_value_from_default(default)
-          default_function = extract_default_function(default_value, default)
+          default_value = extract_value_from_default(field[3], field[2])
+          default_function = extract_default_function(field[3])
+          default_value = lookup_cast_type(sql_type).cast(default_value)
           ClickhouseColumn.new(field[0], default_value, type_metadata, field[1].include?('Nullable'), default_function)
         end
 
@@ -209,32 +239,22 @@ module ActiveRecord
         private
 
         # Extracts the value from a PostgreSQL column default definition.
-        def extract_value_from_default(default)
-          case default
-            # Quoted types
-          when /\Anow\(\)\z/m
-            nil
-            # Boolean types
-          when "true".freeze, "false".freeze
-            default
-            # Object identifier types
-          when "''"
-            ''
-          when /\A-?\d+\z/
-            $1
-          else
-            # Anything else is blank, some user type, or some function
-            # and we can't know the value of that, so return nil.
-            nil
-          end
+        def extract_value_from_default(default_expression, default_type)
+          return nil if default_type != 'DEFAULT' || default_expression.blank?
+          return nil if has_default_function?(default_expression)
+
+          # Convert string
+          return $1 if default_expression.match(/^'(.*?)'$/)
+
+          default_expression
         end
 
-        def extract_default_function(default_value, default) # :nodoc:
-          default if has_default_function?(default_value, default)
+        def extract_default_function(default) # :nodoc:
+          default if has_default_function?(default)
         end
 
-        def has_default_function?(default_value, default) # :nodoc:
-          !default_value && (%r{\w+\(.*\)} === default)
+        def has_default_function?(default) # :nodoc:
+          (%r{\w+\(.*\)} === default)
         end
 
         def format_body_response(body, format)

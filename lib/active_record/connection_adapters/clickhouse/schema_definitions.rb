@@ -94,11 +94,10 @@ module ActiveRecord
           args.each { |name| column(name, kind, **options.except(:limit)) }
         end
 
-        def map(*args, **options)
-          key_type = options[:key_type].to_s.camelize
-          value_type = options[:value_type].to_s.camelize
+        private
 
-          args.each { |name| column(name, :"Map(#{key_type}, #{value_type})", **options.except(:limit, :key_type, :value_type)) }
+        def valid_column_definition_options
+          super + [:array, :low_cardinality, :fixed_string, :value, :type, :map]
         end
       end
 
