@@ -7,6 +7,7 @@ require 'arel/nodes/using'
 require 'active_record/connection_adapters/clickhouse/oid/array'
 require 'active_record/connection_adapters/clickhouse/oid/date'
 require 'active_record/connection_adapters/clickhouse/oid/date_time'
+require 'active_record/connection_adapters/clickhouse/oid/map'
 require 'active_record/connection_adapters/clickhouse/oid/big_integer'
 require 'active_record/connection_adapters/clickhouse/oid/map'
 require 'active_record/connection_adapters/clickhouse/oid/uuid'
@@ -109,9 +110,13 @@ module ActiveRecord
         uint64: { name: 'UInt64' },
         # uint128: { name: 'UInt128' }, not yet implemented in clickhouse
         uint256: { name: 'UInt256' },
+
+        map: { name: 'Map' }
       }.freeze
 
       include Clickhouse::SchemaStatements
+
+      TYPE_MAP = Type::TypeMap.new.tap { |m| initialize_type_map(m) }
 
       # Initializes and connects a Clickhouse adapter.
       def initialize(config_or_deprecated_connection, deprecated_logger = nil, deprecated_connection_options = nil, deprecated_config = nil)
@@ -163,6 +168,10 @@ module ActiveRecord
 
       def arel_visitor # :nodoc:
         Arel::Visitors::Clickhouse.new(self)
+      end
+
+      def type_map
+        self.class::TYPE_MAP
       end
 
       def native_database_types #:nodoc:
